@@ -1,0 +1,30 @@
+name: bench
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Unit test the server
+        run: nix develop --command bash -c 'cd app && go test ./...'
+      - name: Build, measure and check every image
+        run: bash bench/run.sh
+      - name: Publish the table
+        if: always()
+        run: cat results/results.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: results
+          path: |
+            results/results.jsonl
+            results/results.md
+            results/trivy-*.json
+            results/files-*.txt
