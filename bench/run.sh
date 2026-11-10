@@ -35,17 +35,23 @@ for v in "${variants[@]}"; do
   seconds=$(awk "BEGIN { printf \"%.1f\", $(date +%s.%N) - $start }")
 
   id=$(docker image inspect -f '{{.Id}}' "$image")
-  size=$(docker image inspect -f '{{.Size}}' "$image")
   layers=$(docker image inspect -f '{{len .RootFS.Layers}}' "$image")
-  # What a registry stores and a node downloads: the image, gzip-compressed.
-  compressed=$(docker save "$image" | gzip -9 | wc -c)
 
+  # Measured from the exported filesystem, the same way for every image. (Docker's own size
+  # figure isn't comparable: with the containerd image store it counts pulled layers
+  # compressed and loaded ones uncompressed.)
   container=$(docker create "$image")
-  docker export "$container" | tar -t > "results/files-$v.txt"
+  docker export "$container" > results/fs.tar
   docker rm "$container" > /dev/null
-  files=$(grep -cv '/$' "results/files-$v.txt" || true)
+  compressed=$(gzip -9 -c results/fs.tar | wc -c)
+  # Leave out the files Docker adds to every container, which aren't part of the image.
+  tar -tvf results/fs.tar | awk '{ print substr($1, 1, 1), $3, $6 }' \
+    | grep -Ev ' (\./)?(\.dockerenv|etc/hosts|etc/hostname|etc/resolv\.conf|etc/mtab|dev/console)$' > "results/files-$v.txt" || true
+  rm results/fs.tar
+  files=$(grep -c '^-' "results/files-$v.txt" || true)
+  unpacked=$(awk '$1 == "-" { total += $2 } END { print total + 0 }' "results/files-$v.txt")
   shell=no
-  if grep -Eqx '(\./)?(usr/)?bin/(ba|da|a)?sh' "results/files-$v.txt"; then shell=yes; fi
+  if grep -Eq ' (\./)?(usr/)?bin/(ba|da|a)?sh$' "results/files-$v.txt"; then shell=yes; fi
 
   # Start it and ask it for /healthz, the way an orchestrator would.
   container=$(docker run -d -p 127.0.0.1::8080 "$image")
@@ -74,7 +80,7 @@ for v in "${variants[@]}"; do
   vulnerabilities=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "results/trivy-$v.json")
   serious=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' "results/trivy-$v.json")
 
-  jq -cn --arg variant "$v" --arg id "$id" --argjson size "$size" --argjson compressed "$compressed" \
+  jq -cn --arg variant "$v" --arg id "$id" --argjson unpacked "$unpacked" --argjson compressed "$compressed" \
     --argjson layers "$layers" --argjson files "$files" --arg shell "$shell" --arg healthy "$healthy" \
     --arg reproducible "$reproducible" --argjson seconds "$seconds" \
     --argjson vulnerabilities "$vulnerabilities" --argjson serious "$serious" \
@@ -94,9 +100,9 @@ nixpkgs=$(jq -r '.nodes.nixpkgs.locked.rev[0:12]' flake.lock)
 {
   echo "Measured $(date -u +%Y-%m-%d) on $(uname -m), Go $go_docker in the Dockerfiles and $go_nix from nixpkgs $nixpkgs."
   echo
-  echo "| Image | Compressed | Uncompressed | Layers | Files | Shell | CVEs (high + critical) | Same image on rebuild | Cold build |"
+  echo "| Image | Compressed | Unpacked | Layers | Files | Shell | CVEs (high + critical) | Same image on rebuild | Cold build |"
   echo "|---|---:|---:|---:|---:|---|---:|---|---:|"
-  jq -r '"| \(.variant) | \(.compressed / 1048576 * 10 | round / 10) MB | \(.size / 1048576 * 10 | round / 10) MB | \(.layers) | \(.files) | \(.shell) | \(.vulnerabilities) (\(.serious)) | \(.reproducible) | \(.seconds) s |"' results/results.jsonl
+  jq -r '"| \(.variant) | \(.compressed / 1048576 * 10 | round / 10) MB | \(.unpacked / 1048576 * 10 | round / 10) MB | \(.layers) | \(.files) | \(.shell) | \(.vulnerabilities) (\(.serious)) | \(.reproducible) | \(.seconds) s |"' results/results.jsonl
 } > results/results.md
 cat results/results.md
 exit "$failed"
