@@ -6,10 +6,35 @@ CVEs, and whether building again gives the same image.
 
 ## Results
 
-RESULTS
+Measured 2026-11-10 on x86_64 in [this CI run](https://github.com/Urthella/nix-oci-images/actions/runs/42783136759),
+with Go 1.27.3 on both sides and nixpkgs `f4a03c008967`:
 
-The numbers come from one CI run (`bash bench/run.sh`); every run puts a fresh table in its job
-summary and uploads the details, including Trivy's reports and each image's file list.
+| Image | Compressed | Unpacked | Layers | Files | Shell | CVEs (high + critical) | Same image on rebuild | Cold build |
+|---|---:|---:|---:|---:|---|---:|---|---:|
+| debian | 30.9 MB | 80.8 MB | 2 | 2677 | yes | 187 (48) | no | 27.3 s |
+| alpine | 5.9 MB | 13.6 MB | 2 | 83 | yes | 1 (0) | no | 15.1 s |
+| distroless | 3.2 MB | 7.8 MB | 14 | 961 | no | 0 (0) | no | 12.2 s |
+| scratch | 2.3 MB | 5.6 MB | 1 | 1 | no | 0 (0) | no | 10.6 s |
+| nix-dockertools | 3.0 MB | 8.0 MB | 5 | 1211 | no | 0 (0) | yes | 23.1 s |
+| nix-nix2container | 3.0 MB | 8.0 MB | 1 | 1211 | no | 0 (0) | yes | 108.1 s |
+
+Every run puts a fresh table in its job summary and uploads the details, including Trivy's
+reports and each image's file list.
+
+What stands out:
+
+- **Only the Nix images come out the same when rebuilt.** Rebuilding a Dockerfile gives a new
+  image ID even when nothing changed, because timestamps end up in the layers and the config.
+- **The Nix images aren't just the binary.** nixpkgs patches Go's standard library to find time
+  zones, `/etc/services` and MIME types at store paths. Those paths are baked into the binary,
+  so Nix keeps tzdata, iana-etc and mailcap in the image: 1,210 of its 1,211 files. That puts
+  them at distroless's size, which carries tzdata on purpose, rather than scratch's.
+- **The CVEs live in the base.** Debian slim brings 187 findings, 48 of them high or critical, in
+  packages the server never uses. The images without an OS show none, because Trivy then only
+  checks the Go binary.
+- **Layers differ by builder.** `dockerTools.buildLayeredImage` makes one layer per store path.
+  nix2container puts everything in one layer unless you split it. Distroless inherits 14 layers
+  from its base.
 
 ## The six images
 
