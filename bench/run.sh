@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-variants=(debian alpine distroless scratch nix-dockertools nix-nix2container)
+variants=(debian alpine distroless distroless-reproducible scratch nix-dockertools nix-nix2container)
 trivy=aquasec/trivy:0.76.2
 mkdir -p results/trivy-cache
 : > results/results.jsonl
@@ -23,10 +23,18 @@ build() {
     nix-nix2container)
       nix build --quiet "${@:2}" .#image-nix2container -o results/nix2container
       nix run --quiet .#image-nix2container.copyToDockerDaemon ;;
+    distroless-reproducible)
+      # The distroless Dockerfile, unchanged. SOURCE_DATE_EPOCH pins the image's created time
+      # and history; rewrite-timestamp pins the timestamps of the files in new layers.
+      docker buildx build --quiet --no-cache --builder reproducible --build-arg SOURCE_DATE_EPOCH=0 \
+        --output "type=docker,name=hello:$1,rewrite-timestamp=true" -f docker/distroless.Dockerfile app ;;
     *)
       docker build -q --no-cache -f "docker/$1.Dockerfile" -t "hello:$1" app ;;
   esac > /dev/null
 }
+
+# rewrite-timestamp needs a BuildKit builder of its own, rather than the one inside dockerd.
+docker buildx create --name reproducible --driver docker-container > /dev/null 2>&1 || true
 
 for v in "${variants[@]}"; do
   image="hello:$v"
@@ -91,7 +99,7 @@ for v in "${variants[@]}"; do
     debian | alpine) check "$shell" yes "$v has a shell (so the shell check can see one)" ;;
     *) check "$shell" no "$v has no shell" ;;
   esac
-  if [[ $v == nix-* ]]; then check "$reproducible" yes "$v is the same image when rebuilt"; fi
+  if [[ $v == nix-* || $v == *-reproducible ]]; then check "$reproducible" yes "$v is the same image when rebuilt"; fi
 done
 
 go_docker=$(docker run --rm golang:1.27.3-trixie go version | awk '{ print $3 }')
